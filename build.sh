@@ -2,28 +2,22 @@
 set -e
 
 # 默认参数
-arch=x64
+arch=$(uname -m) # 自动检测当前架构
 type=Release
 source_build=0
-export_package=0
+export_pkg=0
 
-# 颜色定义
-BOLDGREEN='\033[1;32m'
-ENDCOLOR='\033[0m'
+# 映射架构名称到 Conan Profile
+if [ "$arch" = "x86_64" ]; then arch="x64"; fi
 
 function do_build() {
-    echo -e "${BOLDGREEN}Conan 2.0 Build Option:${ENDCOLOR}"
-    echo -e "  Arch[${arch}] Type[${type}] SourceBuild[${source_build}]"
-
-    # 1. 执行 conan install
-    # --build=missing: 缺少二进制时编译
-    # --build=*: 全量源码编译 (对应原脚本 -s 参数)
+    echo -e "\033[1;32mStarting Conan 2.0 Build Flow...\033[0m"
+    
+    # 1. 安装依赖并生成工具链 (--output-folder 会定义所有后续路径的基准)
+    # 产物将位于 ./build/ 目录下
     local build_policy="missing"
-    if [ ${source_build} = 1 ]; then
-        build_policy="*"
-    fi
+    if [ ${source_build} = 1 ]; then build_policy="*"; fi
 
-    echo "Running: conan install ..."
     conan install . \
         -pr:b=default \
         -pr:h=${arch} \
@@ -31,55 +25,31 @@ function do_build() {
         --build=${build_policy} \
         --output-folder=build
 
-    # 2. 执行 conan build
-    # Conan 2.0 会自动根据 layout 找到 build 目录
-    echo "Running: conan build ..."
+    # 2. 编译项目
+    # Conan 会自动寻找 build/Release/generators 里的工具链
     conan build . \
         -pr:h=${arch} \
         -s build_type=${type} \
         --output-folder=build
 
-    # 3. 导出包到本地缓存 (对应原脚本 -e 参数)
-    if [ ${export_package} = 1 ]; then
-        echo "Running: conan export-pkg ..."
-        conan export-pkg . \
-            -pr:h=${arch} \
-            -s build_type=${type} \
-            --output-folder=build \
-            -f
+    # 3. 如果需要导出到本地缓存
+    if [ ${export_pkg} = 1 ]; then
+        conan export-pkg . -pr:h=${arch} -s build_type=${type} --output-folder=build -f
     fi
 
-    echo -e "\033[32m ========================================================== \033[0m"
-    echo -e "\033[32m Build ${arch}_${type} complete using Conan 2.0 :) \033[0m"
-    echo -e "\033[32m ========================================================== \033[0m"
+    echo -e "\033[32mBuild complete! Check the './build/${type}' directory.\033[0m"
 }
 
-usage() {
-  echo "Usage: $0 [-t <x64|aarch64>] [-b <debug|release>] [-c] [-s] [-e]"
-  echo "  -t  Target platform (x64, aarch64)"
-  echo "  -b  Build type (Debug, Release)"
-  echo "  -c  Clean build directory"
-  echo "  -s  Build everything from source"
-  echo "  -e  Export package to conan local cache"
-  exit 1
-}
-
-# 解析参数
-while getopts ":t:b:hcse" opt; do
+# 简单的参数解析
+while getopts "t:b:cse" opt; do
   case $opt in
     t) arch=$OPTARG ;;
     b) type=$OPTARG ;;
-    h) usage ;;
-    c) 
-      rm -rf build
-      echo "Cleaned up ./build folder."
-      exit 0 
-      ;;
-    e) export_package=1 ;;
+    c) rm -rf build && echo "Cleaned." && exit 0 ;;
     s) source_build=1 ;;
-    *) usage ;;
+    e) export_pkg=1 ;;
+    *) echo "Usage: ./build.sh [-t arch] [-b type] [-c] [-s] [-e]"; exit 1 ;;
   esac
 done
 
-# 执行构建
 do_build
