@@ -5,3 +5,4 @@ add_executable(${MAIN_EXEC_NAME}
 )
 
 add_subdirectory(enkiTs)
+add_subdirectory(libipc)

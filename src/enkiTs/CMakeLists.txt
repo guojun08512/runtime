@@ -8,6 +8,14 @@ project( enkiTS
 
 file(GLOB ENKITS_SRC "*.cc")
 
+
+# --- 配置选项 ---
+option( ENKITS_BUILD_XENOMAI      "Build example applications" OFF )
+option( ENKITS_BUILD_EXAMPLES      "Build example applications" OFF )
+option( ENKITS_BUILD_SHARED         "Build shared library" ON )
+option( ENKITS_INSTALL              "Generate installation target" OFF )
+option( ENKITS_SANITIZE             "Build with sanitizers" OFF)
+
 set( ENKITS_TASK_PRIORITIES_NUM "3" CACHE STRING "Number of task priorities, 1-5, 0 for defined by defaults in source" )
 
 # --- 库 Target 创建 ---

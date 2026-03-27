@@ -1,0 +1,19 @@
+
+#include "libipc/platform/detail.h"
+#if defined(LIBIPC_OS_WIN)
+#elif defined(LIBIPC_OS_LINUX)
+#include "libipc/platform/linux/a0/err.c"
+#include "libipc/platform/linux/a0/mtx.c"
+#include "libipc/platform/linux/a0/strconv.c"
+#include "libipc/platform/linux/a0/tid.c"
+#include "libipc/platform/linux/a0/time.c"
+#elif defined(LIBIPC_OS_QNX) || defined(LIBIPC_OS_FREEBSD)
+#elif defined(MAC_OS_X) || defined(__APPLE__)
+#include "libipc/platform/linux/a0/err.c"
+#include "libipc/platform/linux/a0/mtx.c"
+#include "libipc/platform/linux/a0/strconv.c"
+#include "libipc/platform/linux/a0/tid.c"
+#include "libipc/platform/linux/a0/time.c"
+#else/*IPC_OS*/
+#   error "Unsupported platform."
+#endif

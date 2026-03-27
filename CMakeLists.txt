@@ -71,12 +71,6 @@ include(GNUInstallDirs)
 include_directories(include)
 include(cmake/RUNTIMECompileOptions.cmake)
 
-# --- 配置选项 ---
-option( ENKITS_BUILD_XENOMAI      "Build example applications" OFF )
-option( ENKITS_BUILD_EXAMPLES      "Build example applications" OFF )
-option( ENKITS_BUILD_SHARED         "Build shared library" ON )
-option( ENKITS_INSTALL              "Generate installation target" OFF )
-option( ENKITS_SANITIZE             "Build with sanitizers" OFF)
 
 add_subdirectory(src)
 add_subdirectory(test)
