@@ -1,0 +1,84 @@
+cmake_minimum_required(VERSION 3.16)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+project(runtime)
+
+# include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+# conan_basic_setup()
+
+set(RUNTIME_RELEASE_VERSION ${RUNTIME_VERSION_MAJOR}.${RUNTIME_VERSION_MINOR}.${RUNTIME_VERSION_PATCH})
+if(NOT DEFINED RUNTIME_VERSION_PRERELEASE)
+    set(RUNTIME_VERSION ${RUNTIME_RELEASE_VERSION})
+else()
+    set(RUNTIME_VERSION ${RUNTIME_RELEASE_VERSION}-${RUNTIME_VERSION_PRERELEASE})
+endif()
+if(DEFINED RUNTIME_VERSION_BUILD)
+    set(RUNTIME_VERSION ${RUNTIME_VERSION}+${RUNTIME_VERSION_BUILD})
+endif()
+
+find_package(Git QUIET)
+if(GIT_FOUND)
+
+set(MAIN_EXEC_NAME runtime)
+#获取最近一次commit的hash值
+set(RUNTIME_LATEST_COMMIT_HASH "")
+execute_process(
+    COMMAND ${GIT_EXECUTABLE} log -1 --pretty=format:%H
+    OUTPUT_VARIABLE RUNTIME_LATEST_COMMIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+#git 分支名称
+set(RUNTIME_BRANCH_NAME "")
+execute_process(
+    COMMAND ${GIT_EXECUTABLE} symbolic-ref --short -q HEAD
+    OUTPUT_VARIABLE RUNTIME_BRANCH_NAME
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+endif()
+
+#编译时间
+set(RUNTIME_COMPILE_TIME "")
+execute_process(
+    COMMAND date
+    OUTPUT_VARIABLE RUNTIME_COMPILE_TIME
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+#编译用户名
+set(RUNTIME_BUILD_USERNAME "")
+execute_process(
+    COMMAND whoami
+    OUTPUT_VARIABLE RUNTIME_BUILD_USERNAME
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# set and add some build flag
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MASK_DDS_COMPILE_WARNING_FLAGS}")
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
+endif()
+
+include(GNUInstallDirs)
+include_directories(include)
+include(cmake/RUNTIMECompileOptions.cmake)
+
+# --- 配置选项 ---
+option( ENKITS_BUILD_XENOMAI      "Build example applications" OFF )
+option( ENKITS_BUILD_EXAMPLES      "Build example applications" OFF )
+option( ENKITS_BUILD_SHARED         "Build shared library" ON )
+option( ENKITS_INSTALL              "Generate installation target" OFF )
+option( ENKITS_SANITIZE             "Build with sanitizers" OFF)
+
+add_subdirectory(src)
+add_subdirectory(test)
+add_subdirectory(debian)
+add_subdirectory(examples)
