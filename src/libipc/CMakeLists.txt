@@ -1,5 +1,4 @@
 set (PACKAGE_VERSION 1.4.1)
-project(ipc)
 
 # --- 配置选项 ---
 option( LIBIPC_BUILD_SHARED_LIBS      "Build libipc applications" ON )
@@ -13,30 +12,30 @@ aux_source_directory(./imp SRC_FILES)
 aux_source_directory(./mem SRC_FILES)
 
 if (LIBIPC_BUILD_SHARED_LIBS)
-  add_library(${PROJECT_NAME} SHARED ${SRC_FILES})
-  target_compile_definitions(${PROJECT_NAME}
+  add_library(${RUNTIME_IPC} SHARED ${SRC_FILES})
+  target_compile_definitions(${RUNTIME_IPC}
     INTERFACE
       LIBIPC_LIBRARY_SHARED_USING__
     PRIVATE
       LIBIPC_LIBRARY_SHARED_BUILDING__)
 else()
-  add_library(${PROJECT_NAME} STATIC ${SRC_FILES})
+  add_library(${RUNTIME_IPC} STATIC ${SRC_FILES})
 endif()
 
 # set output directory
-set_target_properties(${PROJECT_NAME}
+set_target_properties(${RUNTIME_IPC}
 	PROPERTIES
 	ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # set version
-set_target_properties(${PROJECT_NAME}
+set_target_properties(${RUNTIME_IPC}
     PROPERTIES
     VERSION ${PACKAGE_VERSION}
     SOVERSION 3)
 
-# target_include_directories(${PROJECT_NAME}
+# target_include_directories(${RUNTIME_IPC}
 #   PUBLIC  
 #     "$<BUILD_INTERFACE:./include>"
 #     "$<INSTALL_INTERFACE:include>"
@@ -44,13 +43,13 @@ set_target_properties(${PROJECT_NAME}
 #           $<$<BOOL:UNIX>:./platform/linux>)
 
 if(NOT MSVC)
-  target_link_libraries(${PROJECT_NAME} PUBLIC
+  target_link_libraries(${RUNTIME_IPC} PUBLIC
     $<$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},QNX>>:pthread>
     $<$<NOT:$<OR:$<STREQUAL:${CMAKE_SYSTEM_NAME},Windows>,$<STREQUAL:${CMAKE_SYSTEM_NAME},QNX>>>:rt>)
 endif()
 
 install(
-  TARGETS ${PROJECT_NAME}
+  TARGETS ${RUNTIME_IPC}
   EXPORT cpp-ipc-targets
   RUNTIME DESTINATION bin
   LIBRARY DESTINATION lib

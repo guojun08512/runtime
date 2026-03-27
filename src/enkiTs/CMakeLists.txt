@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
-project( enkiTS
+project( ${RUNTIME_SCHED}
          VERSION "1.11"
          DESCRIPTION "A C and C++ task scheduler for creating parallel programs (with Xenomai support)"
-         HOMEPAGE_URL "https://github.com/dougbinks/enkiTS"
+         HOMEPAGE_URL "https://github.com/dougbinks/${RUNTIME_SCHED}"
          LANGUAGES C CXX)
 
 file(GLOB ENKITS_SRC "*.cc")
@@ -20,14 +20,14 @@ set( ENKITS_TASK_PRIORITIES_NUM "3" CACHE STRING "Number of task priorities, 1-5
 
 # --- 库 Target 创建 ---
 if( ENKITS_BUILD_SHARED )
-    add_library( enkiTS SHARED ${ENKITS_SRC} )
-    target_compile_definitions( enkiTS PRIVATE ENKITS_BUILD_DLL=1 )
-    target_compile_definitions( enkiTS INTERFACE ENKITS_DLL=1 )
-    set_target_properties( enkiTS PROPERTIES
+    add_library( ${RUNTIME_SCHED} SHARED ${ENKITS_SRC} )
+    target_compile_definitions( ${RUNTIME_SCHED} PRIVATE ENKITS_BUILD_DLL=1 )
+    target_compile_definitions( ${RUNTIME_SCHED} INTERFACE ENKITS_DLL=1 )
+    set_target_properties( ${RUNTIME_SCHED} PROPERTIES
         VERSION ${PROJECT_VERSION}
         SOVERSION ${PROJECT_VERSION_MAJOR})
 else()
-    add_library( enkiTS STATIC ${ENKITS_SRC} )
+    add_library( ${RUNTIME_SCHED} STATIC ${ENKITS_SRC} )
 endif()
 
 # --- 基础编译选项 ---
@@ -47,21 +47,21 @@ if( ENKITS_BUILD_XENOMAI )
     set(XENO_SYSROOT "/usr/local")
 
     # 2. 配置头文件和宏定义 (PUBLIC 确保使用库的可执行文件也能看到)
-    target_include_directories( enkiTS PUBLIC
+    target_include_directories( ${RUNTIME_SCHED} PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/enkiTS>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${RUNTIME_SCHED}>
         ${XENO_SYSROOT}/include
         ${XENO_SYSROOT}/include/cobalt
     )
-    target_compile_definitions( enkiTS PUBLIC XENOMAI_API_V3 )
+    target_compile_definitions( ${RUNTIME_SCHED} PUBLIC XENOMAI_API_V3 )
 
     # 3. 线程库查找
     set( CMAKE_THREAD_PREFER_PTHREAD TRUE )
     find_package( Threads REQUIRED )
 
     # 4. 配置链接选项 (关键：处理 --wrap=main 和 wrappers)
-    # 使用 INTERFACE 确保这些选项只传给链接 enkiTS 的可执行文件，而不影响库本身的构建（静态库不链接）
-    target_link_options( enkiTS INTERFACE
+    # 使用 INTERFACE 确保这些选项只传给链接 ${RUNTIME_SCHED} 的可执行文件，而不影响库本身的构建（静态库不链接）
+    target_link_options( ${RUNTIME_SCHED} INTERFACE
 	"/usr/local/lib/xenomai/bootstrap.o"
         "-L${XENO_SYSROOT}/lib"
         "-L${XENO_SYSROOT}"
@@ -73,7 +73,7 @@ if( ENKITS_BUILD_XENOMAI )
     )
 
     # 5. 链接具体的实时库
-    target_link_libraries( enkiTS PUBLIC
+    target_link_libraries( ${RUNTIME_SCHED} PUBLIC
         ${CMAKE_THREAD_LIBS_INIT}
         cobalt modechk m dl rt pthread
     )
@@ -86,20 +86,20 @@ if( ENKITS_BUILD_XENOMAI )
     endif()
 else()
     # 非 UNIX 系统的基础路径
-    target_include_directories( enkiTS PUBLIC
+    target_include_directories( ${RUNTIME_SCHED} PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/enkiTS>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${RUNTIME_SCHED}>
     )
 endif()
 
 # --- 其他属性配置 ---
 if( ENKITS_TASK_PRIORITIES_NUM GREATER "0" )
-    target_compile_definitions( enkiTS PUBLIC "ENKITS_TASK_PRIORITIES_NUM=${ENKITS_TASK_PRIORITIES_NUM}" )
+    target_compile_definitions( ${RUNTIME_SCHED} PUBLIC "ENKITS_TASK_PRIORITIES_NUM=${ENKITS_TASK_PRIORITIES_NUM}" )
 endif()
 
 # --- 安装逻辑 ---
 if( ENKITS_INSTALL )
-    install(TARGETS enkiTS EXPORT enkiTSConfig ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    install(FILES ${ENKITS_HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/enkiTS)
-    install(EXPORT enkiTSConfig NAMESPACE enkiTS:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/enkiTS)
+    install(TARGETS ${RUNTIME_SCHED} EXPORT enkiTSConfig ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(FILES ${ENKITS_HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${RUNTIME_SCHED})
+    install(EXPORT enkiTSConfig NAMESPACE ${RUNTIME_SCHED}:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${RUNTIME_SCHED})
 endif()
