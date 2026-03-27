@@ -21,6 +21,7 @@ if(GIT_FOUND)
 set(MAIN_EXEC_NAME runtime)
 set(RUNTIME_IPC libipc)
 set(RUNTIME_SCHED enkiTs)
+set(RUNTIME_SOURCE runtime_core)
 #获取最近一次commit的hash值
 set(RUNTIME_LATEST_COMMIT_HASH "")
 execute_process(

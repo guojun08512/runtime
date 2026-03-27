@@ -6,10 +6,11 @@ add_executable(${MAIN_EXEC_NAME}
 
 add_subdirectory(enkiTs)
 add_subdirectory(libipc)
-
+add_subdirectory(runtime_core)
 
 target_link_libraries(${MAIN_EXEC_NAME}
   PRIVATE ${RUNTIME_IPC}
   PRIVATE ${RUNTIME_SCHED}
+  PRIVATE ${RUNTIME_SOURCE}
   ${CONAN_LIBS}
 )

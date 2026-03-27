@@ -22,7 +22,6 @@ else()
     endif()
 endif()
 
-message(STATUS "runtime SLOG_SHOW: ${SLOG_SHOW_LEVEL}")
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
