@@ -23,14 +23,14 @@ function do_build() {
         -pr:h=${arch} \
         -s build_type=${type} \
         --build=${build_policy} \
-        --output-folder=build
+        --output-folder=.
 
     # 2. 编译项目
     # Conan 会自动寻找 build/Release/generators 里的工具链
     conan build . \
         -pr:h=${arch} \
         -s build_type=${type} \
-        --output-folder=build
+        --output-folder=.
 
     # 3. 如果需要导出到本地缓存
     if [ ${export_pkg} = 1 ]; then
