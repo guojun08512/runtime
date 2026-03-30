@@ -40,7 +40,7 @@ static bool ParseTaskCommandJson(const std::string &cmd,
   }
 
   Config::TaskType t = Config::TaskType::FILE_IO;
-  if (type == "iectask" || type == "compute")
+  if (type == "iectask" || type == "iec")
     t = Config::TaskType::IECTASK;
   else if (type == "net" || type == "network")
     t = Config::TaskType::NETWORK_IO;
@@ -74,52 +74,63 @@ void TaskProducer(int runId) {
   std::cout << "[TaskProducer] 轮次 " << runId << " 开始监听任务指令...\n";
 
   // 循环接收任务指令直到 stopFlag 被设置
+  // 使用非阻塞方式以便快速响应stopFlag
   while (!cfg->stopFlag) {
-    if (receiver.wait_for_recv(cfg->ipcConfig.receiverCount,
-                               cfg->ipcConfig.waitTimeoutUs)) {
-      auto buff = receiver.recv();
-      std::string cmd((const char *)buff.data(), buff.size());
+    // 非阻塞接收 - 如果没有数据立即返回  
+    auto buff = receiver.recv(cfg->ipcConfig.waitTimeoutUs);
+    if (buff.empty()) {
+      // 没有数据，短暂睡眠然后轮询
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+      continue;
+    }
+    
+    std::string cmd((const char *)buff.data(), buff.size());
 
-      Config::TaskData ipcTask;
-      bool parsed = false;
-      parsed = ParseTaskCommandJson(cmd, ipcTask);
+    Config::TaskData taskData;
+    bool parsed = false;
+    parsed = ParseTaskCommandJson(cmd, taskData);
 
-      if (parsed) {
-        ipcTask.runId = runId;
-        ipcTask.taskId = 0;
+    if (parsed) {
+      taskData.runId = runId;
+      taskData.taskId = 0;
 
-        // 注册任务
-        if (ipcTask.type == Config::TaskType::FILE_IO) {
-          auto *task = new FileIOConsumerTask(ipcTask);
-          cfg->ioTasksPending.fetch_add(1, std::memory_order_relaxed);
-          task->threadNum =
-              cfg->ioThreadStartIndex + (uint32_t)Config::IOThreadId::FILE_IO;
-          {
-            std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
-            cfg->periodicTasks.push_back({true, nullptr, task, ipcTask,
-                                          std::chrono::steady_clock::now()});
-          }
-        } else if (ipcTask.type == Config::TaskType::IECTASK) {
-          auto *task = new IecTask(ipcTask);
-          {
-            std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
-            cfg->periodicTasks.push_back({false, task, nullptr, ipcTask,
-                                          std::chrono::steady_clock::now()});
-          }
-        } else if (ipcTask.type == Config::TaskType::NETWORK_IO) {
-          auto *task = new NetworkIOConsumerTask(ipcTask);
-          cfg->ioTasksPending.fetch_add(1, std::memory_order_relaxed);
-          task->threadNum = cfg->ioThreadStartIndex +
-                            (uint32_t)Config::IOThreadId::NETWORK_IO_0;
-          {
-            std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
-            cfg->periodicTasks.push_back({true, nullptr, task, ipcTask,
-                                          std::chrono::steady_clock::now()});
-          }
+      std::cout << taskData.taskLabel << " | 轮次" << taskData.runId
+                << " | 任务类型: " << (taskData.type == Config::TaskType::IECTASK
+                                          ? "IECTASK"
+                                          : (taskData.type == Config::TaskType::FILE_IO
+                                                 ? "FILE_IO"
+                                                 : "NETWORK_IO"))
+                << " | 间隔: " << taskData.intervalMs << "ms"
+                << " | 优先级: " << taskData.priority << "\n";
+
+      // 注册任务
+      if (taskData.type == Config::TaskType::FILE_IO) {
+        auto *task = new FileIOConsumerTask(taskData);
+        cfg->ioTasksPending.fetch_add(1, std::memory_order_relaxed);
+        // FILE_IO 作为 TaskSet（非Pinned），可以在任何线程执行，不需要指定threadNum
+        {
+          std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
+          cfg->periodicTasks.push_back({false, task, nullptr, taskData,
+                                        std::chrono::steady_clock::now()});
         }
-      } else if (!cmd.empty()) {
-        std::cerr << "[TaskProducer] 指令解析失败: " << cmd << "\n";
+      } else if (taskData.type == Config::TaskType::IECTASK) {
+        auto *task = new IecTask(taskData);
+        {
+          std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
+          cfg->periodicTasks.push_back({false, task, nullptr, taskData,
+                                        std::chrono::steady_clock::now()});
+        }
+      } else if (taskData.type == Config::TaskType::NETWORK_IO) {
+        auto *task = new NetworkIOConsumerTask(taskData);
+        cfg->ioTasksPending.fetch_add(1, std::memory_order_relaxed);
+        {
+          std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
+          cfg->periodicTasks.push_back({false, task, nullptr, taskData,
+                                        std::chrono::steady_clock::now()});
+        }
       }
+    } else if (!cmd.empty()) {
+      std::cerr << "[TaskProducer] 指令解析失败: " << cmd << "\n";
     }
   }
 

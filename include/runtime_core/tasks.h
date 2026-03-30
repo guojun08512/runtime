@@ -8,9 +8,10 @@ class IecTask : public enki::ITaskSet
 public:
     explicit IecTask(const Config::TaskData& data);
     void ExecuteRange(enki::TaskSetPartition range, uint32_t threadNum) override;
-
+    Config::TaskState GetState() const { return m_state.load(); }
 private:
     Config::TaskData m_data;
+    std::atomic<Config::TaskState> m_state{Config::TaskState::PENDING};
 };
 
 // IEC 线程常驻循环任务
@@ -21,11 +22,11 @@ public:
 };
 
 // 文件 IO 任务
-class FileIOConsumerTask : public enki::IPinnedTask
+class FileIOConsumerTask : public enki::ITaskSet
 {
 public:
     explicit FileIOConsumerTask(const Config::TaskData& data);
-    void Execute() override;
+    void ExecuteRange(enki::TaskSetPartition range, uint32_t threadNum) override;
 
     Config::TaskState GetState() const { return m_state.load(); }
 
@@ -35,11 +36,11 @@ private:
 };
 
 // 网络 IO 任务
-class NetworkIOConsumerTask : public enki::IPinnedTask
+class NetworkIOConsumerTask : public enki::ITaskSet
 {
 public:
     explicit NetworkIOConsumerTask(const Config::TaskData& data);
-    void Execute() override;
+    void ExecuteRange(enki::TaskSetPartition range, uint32_t threadNum) override;
 
     Config::TaskState GetState() const { return m_state.load(); }
 

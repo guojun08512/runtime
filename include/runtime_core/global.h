@@ -58,7 +58,7 @@ public:
   // IPC 配置结构体
   struct IPCConfig {
     std::string routeName = "runtime_task_route"; // IPC 路由名称
-    uint64_t waitTimeoutUs = 100000ull; // 等待超时时间（微秒），默认 100ms
+    uint64_t waitTimeoutUs = 1000; // 等待超时时间（微秒），默认 100ms
     bool enabled = true;                // 是否启用 IPC
     uint64_t receiverCount = 1; // 预设接收者数量（用于调度优化）
     IPCConfig() = default;
