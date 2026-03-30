@@ -8,16 +8,6 @@
 
 int main() {
   auto *cfg = Config::Instance();
-
-  // 设置全局进程 FIFO 调度，优先级高以降低 1/2/10/30ms 任务延迟抖动
-//   struct sched_param param;
-//   param.sched_priority = 90;
-//   if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
-//     std::cerr << "[警告] 调度模式 SCHED_FIFO 失败: " << std::strerror(errno) << "\n";
-//   } else {
-//     std::cout << "[INFO] SCHED_FIFO 设定成功, 优先级=" << param.sched_priority << "\n";
-//   }
-
   // 初始化调度器
   enki::TaskSchedulerConfig schedulerConfig;
   schedulerConfig.numTaskThreadsToCreate += (uint32_t)Config::IOThreadId::NUM;
@@ -38,8 +28,8 @@ int main() {
   }
 
   // 生产消费循环
-  const int TOTAL_RUNS = 5;
-  for (cfg->runCount = 1; cfg->runCount <= TOTAL_RUNS; ++cfg->runCount) {
+//   const int TOTAL_RUNS = 5;
+//   for (cfg->runCount = 1; cfg->runCount <= TOTAL_RUNS; ++cfg->runCount) {
     TaskProducer(cfg->runCount);
     cfg->ts.WaitforAll();
 
@@ -51,7 +41,7 @@ int main() {
 
     std::cout << "==================== 轮次 " << cfg->runCount
               << " 完成 ====================\n";
-  }
+//   }
 
   // 退出
   cfg->stopFlag = true;

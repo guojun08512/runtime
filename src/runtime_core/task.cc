@@ -30,7 +30,6 @@ void IecTask::ExecuteRange(enki::TaskSetPartition,
 void IECLoopTask::Execute() {
   auto *cfg = Config::Instance();
   std::cout << "[IEC:IO" << threadNum << "] 已启动\n";
-  uint64_t tick = 0;
 
   while (!cfg->ts.GetIsShutdownRequested() && !cfg->stopFlag) {
     bool isScheduler = (threadNum == cfg->ioThreadStartIndex);
@@ -74,9 +73,6 @@ void IECLoopTask::Execute() {
           next += std::chrono::milliseconds(entry->data.intervalMs);
         }
         entry->nextRun = next;
-        // auto nextms = std::chrono::duration_cast<std::chrono::milliseconds>(entry->nextRun.time_since_epoch()).count();
-        // std::cout << "[IEC:IO" << threadNum << "] " << entry->data.taskLabel
-        //           << " next@" << nextms << "ms\n";
       }
 
       // 计算下一次唤醒时间
@@ -90,15 +86,12 @@ void IECLoopTask::Execute() {
         }
       }
 
-      tick++;
-
       auto now2 = std::chrono::steady_clock::now();
       if (nextWake != std::chrono::steady_clock::time_point::max()) {
         auto sleepDuration = std::chrono::duration_cast<std::chrono::milliseconds>(nextWake - now2);
         if (sleepDuration < std::chrono::milliseconds(1)) {
           sleepDuration = std::chrono::milliseconds(1);
         }
-        // std::cout << "[IEC:IO" << threadNum << "] 心跳 nextSleep=" << sleepDuration.count() << "ms\n";
         std::this_thread::sleep_for(sleepDuration);
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

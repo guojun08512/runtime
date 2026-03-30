@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(runtime)
 
-# include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
-# conan_basic_setup()
 
 set(RUNTIME_RELEASE_VERSION ${RUNTIME_VERSION_MAJOR}.${RUNTIME_VERSION_MINOR}.${RUNTIME_VERSION_PATCH})
 if(NOT DEFINED RUNTIME_VERSION_PRERELEASE)
@@ -22,7 +20,6 @@ set(MAIN_EXEC_NAME runtime)
 set(RUNTIME_IPC libipc)
 set(RUNTIME_SCHED enkiTs)
 set(RUNTIME_SOURCE runtime_core)
-#获取最近一次commit的hash值
 set(RUNTIME_LATEST_COMMIT_HASH "")
 execute_process(
     COMMAND ${GIT_EXECUTABLE} log -1 --pretty=format:%H
