@@ -15,37 +15,33 @@ void IECLoopTask::Execute() {
     bool isScheduler = (threadNum == cfg->ioThreadStartIndex);
 
     if (isScheduler) {
+      // 周期性任务调度：根据 TaskData.intervalMs 来触发执行
       auto now = std::chrono::steady_clock::now();
-      std::vector<Config::PeriodicTaskInfo *> dueTasks;
+      std::vector<Config::PeriodicTaskInfo*> dueTasks;
 
-      std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
-      for (auto &entry : cfg->periodicTasks) {
-        if (entry.data.isPeriodic) {
-          if (now >= entry.nextRun) {
+      {
+        std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
+        for (auto &entry : cfg->periodicTasks) {
+          if (entry.data.isPeriodic && now >= entry.nextRun) {
             dueTasks.push_back(&entry);
           }
         }
       }
 
       // 优先级从高到低调度
-      std::sort(dueTasks.begin(), dueTasks.end(),
-                [](const Config::PeriodicTaskInfo *a,
-                   const Config::PeriodicTaskInfo *b) {
-                  return a->data.priority > b->data.priority;
-                });
+      std::sort(dueTasks.begin(), dueTasks.end(), [](const Config::PeriodicTaskInfo* a, const Config::PeriodicTaskInfo* b) {
+        return a->data.priority > b->data.priority;
+      });
 
       for (auto *entry : dueTasks) {
         if (entry->isPinned && entry->pinnedTask) {
           cfg->ts.AddPinnedTask(entry->pinnedTask);
         } else if (!entry->isPinned && entry->taskSet) {
           cfg->ts.AddTaskSetToPipe(entry->taskSet);
-        } else {
-          std::cout << "[调度警告] 任务 " << entry->data.taskLabel
-                    << " 无法调度 (isPinned=" << entry->isPinned << ")\n";
         }
 
-        auto next =
-            entry->nextRun + std::chrono::milliseconds(entry->data.intervalMs);
+        // 基于上次预定时间连续计算，避免调度延迟越积越大
+        auto next = entry->nextRun + std::chrono::milliseconds(entry->data.intervalMs);
         while (next <= now) {
           next += std::chrono::milliseconds(entry->data.intervalMs);
         }
@@ -53,8 +49,7 @@ void IECLoopTask::Execute() {
       }
 
       // 计算下一次唤醒时间
-      std::chrono::steady_clock::time_point nextWake =
-          std::chrono::steady_clock::time_point::max();
+      std::chrono::steady_clock::time_point nextWake = std::chrono::steady_clock::time_point::max();
       {
         std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
         for (auto &entry : cfg->periodicTasks) {
@@ -66,21 +61,22 @@ void IECLoopTask::Execute() {
 
       auto now2 = std::chrono::steady_clock::now();
       if (nextWake != std::chrono::steady_clock::time_point::max()) {
-        auto sleepDuration =
-            std::chrono::duration_cast<std::chrono::milliseconds>(nextWake -
-                                                                  now2);
+        auto sleepDuration = std::chrono::duration_cast<std::chrono::milliseconds>(nextWake - now2);
         if (sleepDuration < std::chrono::milliseconds(1)) {
           sleepDuration = std::chrono::milliseconds(1);
         }
         std::this_thread::sleep_for(sleepDuration);
       } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     } else {
+      // 其他 IO 线程只执行已刷入的 pinned 任务，避免重复调度
       cfg->ts.RunPinnedTasks();
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
+
+  std::cout << "[IEC:IO" << threadNum << "] 已退出\n";
 }
 
 // -----------------------------------------------------------------------------
