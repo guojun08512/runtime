@@ -1,9 +1,10 @@
 #include "runtime_core/productor.h"
 #include "cjson/cJSON.h"
+#include <glog/logging.h>
 #include "libipc/ipc.h"
 #include "runtime_core/global.h"
+#include "runtime_core/plugin_control.h"
 #include "runtime_core/tasks.h"
-#include <iostream>
 
 static bool ParseTaskCommandJson(const std::string &cmd,
                                  Config::TaskData &outData) {
@@ -60,31 +61,31 @@ void TaskProducer(int runId) {
 
   // 检查 IPC 是否启用
   if (!cfg->ipcConfig.enabled) {
-    std::cerr << "[TaskProducer] IPC 已禁用\n";
+    LOG(WARNING) << "[TaskProducer] IPC 已禁用";
     return;
   }
 
   ipc::route receiver(cfg->ipcConfig.routeName.c_str(), ipc::receiver);
   if (!receiver.valid()) {
-    std::cerr << "[TaskProducer] libipc receiver 连接失败: "
-              << cfg->ipcConfig.routeName << "\n";
+    LOG(ERROR) << "[TaskProducer] libipc receiver 连接失败: "
+               << cfg->ipcConfig.routeName;
     return;
   }
 
-  std::cout << "[TaskProducer] 轮次 " << runId << " 开始监听任务指令...\n";
+  LOG(INFO) << "[TaskProducer] 轮次 " << runId << " 开始监听任务指令...";
 
-  // 循环接收任务指令直到 stopFlag 被设置
-  // 使用非阻塞方式以便快速响应stopFlag
   while (!cfg->stopFlag) {
-    // 非阻塞接收 - 如果没有数据立即返回  
     auto buff = receiver.recv(cfg->ipcConfig.waitTimeoutUs);
     if (buff.empty()) {
-      // 没有数据，短暂睡眠然后轮询
       std::this_thread::sleep_for(std::chrono::microseconds(100));
       continue;
     }
     
     std::string cmd((const char *)buff.data(), buff.size());
+
+    if (HandlePluginControlCommand(cmd, cfg, runId)) {
+      continue;
+    }
 
     Config::TaskData taskData;
     bool parsed = false;
@@ -94,20 +95,23 @@ void TaskProducer(int runId) {
       taskData.runId = runId;
       taskData.taskId = 0;
 
-      std::cout << taskData.taskLabel << " | 轮次" << taskData.runId
-                << " | 任务类型: " << (taskData.type == Config::TaskType::IECTASK
-                                          ? "IECTASK"
-                                          : (taskData.type == Config::TaskType::FILE_IO
-                                                 ? "FILE_IO"
-                                                 : "NETWORK_IO"))
+      LOG(INFO) << taskData.taskLabel << " | 轮次" << taskData.runId
+                << " | 任务类型: "
+                << (taskData.type == Config::TaskType::IECTASK
+                        ? "IECTASK"
+                        : (taskData.type == Config::TaskType::FILE_IO
+                               ? "FILE_IO"
+                               : (taskData.type ==
+                                          Config::TaskType::NETWORK_IO
+                                      ? "NETWORK_IO"
+                                      : "PLUGIN_IO")))
                 << " | 间隔: " << taskData.intervalMs << "ms"
-                << " | 优先级: " << taskData.priority << "\n";
+                << " | 优先级: " << taskData.priority;
 
       // 注册任务
       if (taskData.type == Config::TaskType::FILE_IO) {
         auto *task = new FileIOConsumerTask(taskData);
         cfg->ioTasksPending.fetch_add(1, std::memory_order_relaxed);
-        // FILE_IO 作为 TaskSet（非Pinned），可以在任何线程执行，不需要指定threadNum
         {
           std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
           cfg->periodicTasks.push_back({false, task, nullptr, taskData,
@@ -130,9 +134,9 @@ void TaskProducer(int runId) {
         }
       }
     } else if (!cmd.empty()) {
-      std::cerr << "[TaskProducer] 指令解析失败: " << cmd << "\n";
+      LOG(ERROR) << "[TaskProducer] 指令解析失败: " << cmd;
     }
   }
 
-  std::cout << "[TaskProducer] 轮次 " << runId << " 停止监听\n";
+  LOG(INFO) << "[TaskProducer] 轮次 " << runId << " 停止监听";
 }

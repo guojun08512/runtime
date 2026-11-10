@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(runtime)
 
+find_package(glog REQUIRED)
 
 set(RUNTIME_RELEASE_VERSION ${RUNTIME_VERSION_MAJOR}.${RUNTIME_VERSION_MINOR}.${RUNTIME_VERSION_PATCH})
 if(NOT DEFINED RUNTIME_VERSION_PRERELEASE)
@@ -61,7 +62,7 @@ execute_process(
 )
 
 # set and add some build flag
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MASK_DDS_COMPILE_WARNING_FLAGS}")
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
@@ -70,9 +71,11 @@ endif()
 include(GNUInstallDirs)
 include_directories(include)
 include(cmake/RUNTIMECompileOptions.cmake)
+enable_testing()
 
 
 add_subdirectory(src)
+add_subdirectory(plugins)
 add_subdirectory(test)
 add_subdirectory(debian)
 add_subdirectory(examples)

@@ -1,14 +1,15 @@
-#include <iostream>
+#include "runtime_core/logging.h"
 #include <thread>
 #include <chrono>
 #include "libipc/ipc.h"
 
-int main() {
+int main(int argc, char **argv) {
+    runtime_logging::Init(argv[0]);
     const char *routeName = "runtime_task_route";
 
     ipc::route sender(routeName, ipc::sender);
     if (!sender.valid()) {
-        std::cerr << "[sender] open route failed: " << routeName << std::endl;
+        LOG(ERROR) << "[sender] open route failed: " << routeName;
         return 1;
     }
 
@@ -21,10 +22,10 @@ int main() {
     })";
 
     if (!sender.send(json1.c_str(), json1.size() + 1, 2000000ull)) {
-        std::cerr << "[sender] send json1 failed" << std::endl;
+        LOG(ERROR) << "[sender] send json1 failed";
         return 2;
     }
-    std::cout << "[sender] sent: " << json1 << std::endl;
+    LOG(INFO) << "[sender] sent: " << json1;
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -37,13 +38,13 @@ int main() {
     })";
 
     if (!sender.send(json2.c_str(), json2.size() + 1, 2000000ull)) {
-        std::cerr << "[sender] send json2 failed" << std::endl;
+        LOG(ERROR) << "[sender] send json2 failed";
         return 3;
     }
-    std::cout << "[sender] sent: " << json2 << std::endl;
+    LOG(INFO) << "[sender] sent: " << json2;
 
-    std::cout << "[sender] wait for 3s for runtime to execute tasks..." << std::endl;
+    LOG(INFO) << "[sender] wait for 3s for runtime to execute tasks...";
     std::this_thread::sleep_for(std::chrono::seconds(3));
-    std::cout << "[sender] done" << std::endl;
+    LOG(INFO) << "[sender] done";
     return 0;
 }

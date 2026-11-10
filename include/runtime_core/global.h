@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+namespace runtime_plugin {
+class PluginManager;
+}
+
 class AppConfig {
 private:
   AppConfig() = default;
@@ -30,7 +34,13 @@ public:
   };
 
   // 任务类型
-  enum class TaskType { IECTASK, FILE_IO, NETWORK_IO };
+  enum class TaskType {
+    IECTASK,
+    FILE_IO,
+    NETWORK_IO,
+    PLUGIN_IO,
+    PLUGIN_HOOK
+  };
 
   // 任务状态
   enum class TaskState { PENDING, RUNNING, COMPLETED, FAILED };
@@ -45,6 +55,12 @@ public:
     bool isPeriodic = false;
     uint32_t intervalMs = 0; // 周期时长（毫秒）
     int priority = 0;        // 优先级，数值越大优先级越高
+    std::string pluginId;
+    std::string driverTypeId;
+    uint32_t readBytes = 0;
+    uint32_t writeBytes = 0;
+    uint32_t parameterId = UINT32_MAX;
+    uint32_t parameterBytes = 0;
   };
 
   struct PeriodicTaskInfo {
@@ -69,6 +85,8 @@ public:
   std::atomic<int32_t> runCount = 0;
   std::atomic<bool> stopFlag = false;
   uint32_t ioThreadStartIndex = 0;
+  uint32_t pluginHookCycleIntervalMs = 1;
+  int pluginHookCyclePriority = 0;
 
   // IPC 配置
   IPCConfig ipcConfig;
@@ -80,6 +98,9 @@ public:
 
   std::vector<PeriodicTaskInfo> periodicTasks;
   std::mutex periodicTasksMutex;
+
+  // 插件在 main 中创建，生命周期覆盖所有调度器和 IEC 线程。
+  runtime_plugin::PluginManager *plugin_manager = nullptr;
 };
 
 using Config = AppConfig;

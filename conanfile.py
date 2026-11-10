@@ -53,6 +53,7 @@ class RuntimeServiceConan(ConanFile):
     def requirements(self):
         self.requires("gtest/1.11.0")
         self.requires("cjson/1.7.15")
+        self.requires("glog/0.6.0")
 
     def source(self):
         git = Git(self)

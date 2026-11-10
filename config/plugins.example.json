@@ -1,0 +1,11 @@
+{
+  "plugins": [
+    {
+      "path": "/absolute/path/to/libruntime_example_io_plugin.so",
+      "auto_start": true,
+      "config": {
+        "poll_interval_ms": 1
+      }
+    }
+  ]
+}
