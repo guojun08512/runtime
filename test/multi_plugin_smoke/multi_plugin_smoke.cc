@@ -1,4 +1,5 @@
 #include "runtime_plugin/plugin_manager.h"
+#include "runtime_core/task_callback.h"
 #include "runtime_core/logging.h"
 
 #include <string>
@@ -31,8 +32,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (TaskCallbackRegistry::Instance().Resolve(
+            Config::TaskType::IECTASK, "example.iec") == nullptr ||
+        TaskCallbackRegistry::Instance().Resolve(
+            Config::TaskType::FILE_IO, "example.io") == nullptr ||
+        TaskCallbackRegistry::Instance().Resolve(
+            Config::TaskType::NETWORK_IO, "example.network") == nullptr) {
+        LOG(ERROR) << "dynamic plugin callbacks were not registered";
+        return 1;
+    }
+
     for (uint32_t i = 0; i < 100; ++i) {
-        if (manager.CallAllHooks(RT_HOOK_COMM_CYCLE, i, 0, &error) != RT_OK) {
+        if (manager.CallAllHooks(RT_HOOK_COMM_CYCLE, 0, 0, &error) != RT_OK) {
             LOG(ERROR) << "multi-plugin hook dispatch failed: " << error;
             return 1;
         }
@@ -42,6 +53,12 @@ int main(int argc, char **argv) {
         manager.UnloadPlugin(io_id, &error) != RT_OK ||
         manager.plugin_count() != 0) {
         LOG(ERROR) << "multi-plugin cleanup failed: " << error;
+        return 1;
+    }
+
+    if (TaskCallbackRegistry::Instance().Resolve(
+            Config::TaskType::IECTASK, "example.iec") != nullptr) {
+        LOG(ERROR) << "dynamic plugin callbacks were not unregistered";
         return 1;
     }
 

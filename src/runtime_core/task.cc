@@ -1,9 +1,85 @@
 #include "runtime_core/tasks.h"
+#include "runtime_plugin/plugin_manager.h"
 #include <glog/logging.h>
 #include <algorithm>
 #include <chrono>
 #include <thread>
 #include <vector>
+
+namespace {
+
+struct TaskBufferView {
+  const void *input_data = nullptr;
+  uint32_t input_size = 0;
+  uint64_t input_sequence = 0;
+  void *output_data = nullptr;
+  uint32_t output_size = 0;
+};
+
+TaskBufferView AcquireTaskBuffers(runtime_core::TaskBuffers *buffers) {
+  TaskBufferView view;
+  if (buffers != nullptr && buffers->valid()) {
+    view.input_data =
+        buffers->AcquireInput(&view.input_size, &view.input_sequence);
+    view.output_data = buffers->AcquireOutput(&view.output_size);
+  }
+  return view;
+}
+
+uint32_t TaskKind(Config::TaskType type) {
+  switch (type) {
+  case Config::TaskType::IECTASK:
+    return RT_TASK_KIND_IEC;
+  case Config::TaskType::FILE_IO:
+    return RT_TASK_KIND_IO;
+  case Config::TaskType::NETWORK_IO:
+    return RT_TASK_KIND_NETWORK;
+  default:
+    return 0;
+  }
+}
+
+int RunTaskCallback(const Config::TaskData &data,
+                    RuntimeTaskCallback callback,
+                    runtime_core::TaskBuffers *buffers,
+                    uint32_t event_id,
+                    uint64_t sequence) {
+  if (callback == nullptr) {
+    return 1;
+  }
+  TaskBufferView view;
+  if (event_id == RT_HOOK_COMM_CYCLE) {
+    view = AcquireTaskBuffers(buffers);
+  }
+  RuntimeTaskContext context = {
+      1,
+      sizeof(RuntimeTaskContext),
+      event_id,
+      TaskKind(data.type),
+      sequence,
+      data.taskLabel.c_str(),
+      data.taskConfigJson.c_str(),
+      view.input_data,
+      view.input_size,
+      view.input_sequence,
+      view.output_data,
+      view.output_size,
+  };
+  const int result = callback(&context);
+  if (event_id == RT_HOOK_COMM_CYCLE &&
+      result == 0 && view.output_data != nullptr && buffers != nullptr) {
+    buffers->PublishOutput();
+  }
+  return result;
+}
+
+void NotifyTaskEvent(const Config::TaskData &data,
+                     RuntimeTaskCallback callback,
+                     uint32_t event_id) {
+  RunTaskCallback(data, callback, nullptr, event_id, 0);
+}
+
+} // namespace
 
 // -----------------------------------------------------------------------------
 void IECLoopTask::Execute() {
@@ -85,9 +161,25 @@ void IECLoopTask::Execute() {
 
 // -----------------------------------------------------------------------------
 
-IecTask::IecTask(const Config::TaskData &data) : m_data(data) {
+IecTask::IecTask(const Config::TaskData &data)
+    : m_data(data),
+      m_callback(TaskCallbackRegistry::Instance().Resolve(
+          data.type, data.executorName)),
+      m_buffers(data.taskLabel, data.inputBytes, data.outputBytes) {
   m_SetSize = 1;
   m_data.state = Config::TaskState::PENDING;
+  if (!m_buffers.valid()) {
+    LOG(ERROR) << "IEC task shared buffers unavailable: " << data.taskLabel;
+  } else {
+    LOG(INFO) << "IEC task shared buffers: input=" << m_buffers.input_name()
+              << " output=" << m_buffers.output_name();
+  }
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_TASKS);
+}
+
+IecTask::~IecTask() {
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_COMM);
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_TASKS);
 }
 
 void IecTask::ExecuteRange(enki::TaskSetPartition, uint32_t threadNum) {
@@ -100,11 +192,32 @@ void IecTask::ExecuteRange(enki::TaskSetPartition, uint32_t threadNum) {
     return;
   }
   m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
+  if (!m_started.exchange(true, std::memory_order_relaxed)) {
+    NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_COMM);
+  }
 
   try {
-    m_state.store(Config::TaskState::COMPLETED, std::memory_order_relaxed);
-    LOG(INFO) << "[IEC] 线程" << threadNum << " | 轮次" << m_data.runId
-              << " | 任务" << m_data.taskLabel << " | 状态: COMPLETED";
+    const uint64_t sequence =
+        m_executionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (RunTaskCallback(m_data,
+                        m_callback,
+                        &m_buffers,
+                        RT_HOOK_COMM_CYCLE,
+                        sequence) == 0) {
+      m_state.store(Config::TaskState::COMPLETED,
+                    std::memory_order_relaxed);
+      LOG(INFO) << "[IEC] 线程" << threadNum << " | 轮次" << m_data.runId
+                << " | 任务" << m_data.taskLabel
+                << " | 回调: " << m_data.executorName
+                << " | 状态: COMPLETED";
+    } else {
+      m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
+      cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
+      LOG(ERROR) << "[IEC] 线程" << threadNum << " | 轮次" << m_data.runId
+                 << " | 任务" << m_data.taskLabel
+                 << " | 回调: " << m_data.executorName
+                 << " | 状态: FAILED";
+    }
   } catch (...) {
     m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
     cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
@@ -116,24 +229,61 @@ void IecTask::ExecuteRange(enki::TaskSetPartition, uint32_t threadNum) {
 // -----------------------------------------------------------------------------
 
 FileIOConsumerTask::FileIOConsumerTask(const Config::TaskData &data)
-    : m_data(data) {
+    : m_data(data),
+      m_callback(TaskCallbackRegistry::Instance().Resolve(
+          data.type, data.executorName)),
+      m_buffers(data.taskLabel, data.inputBytes, data.outputBytes) {
   m_data.state = Config::TaskState::PENDING;
+  if (!m_buffers.valid()) {
+    LOG(ERROR) << "IO task shared buffers unavailable: " << data.taskLabel;
+  } else {
+    LOG(INFO) << "IO task shared buffers: input=" << m_buffers.input_name()
+              << " output=" << m_buffers.output_name();
+  }
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_TASKS);
+}
+
+FileIOConsumerTask::~FileIOConsumerTask() {
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_COMM);
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_TASKS);
 }
 
 void FileIOConsumerTask::ExecuteRange(enki::TaskSetPartition range,
                                       uint32_t threadNum) {
   auto *cfg = Config::Instance();
 
-  cfg->ioTasksPending.fetch_sub(1, std::memory_order_relaxed);
+  if (!m_pendingConsumed.exchange(true, std::memory_order_relaxed)) {
+    cfg->ioTasksPending.fetch_sub(1, std::memory_order_relaxed);
+  }
   m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
   cfg->ioTasksRunning.fetch_add(1, std::memory_order_relaxed);
+  if (!m_started.exchange(true, std::memory_order_relaxed)) {
+    NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_COMM);
+  }
 
   try {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    m_state.store(Config::TaskState::COMPLETED, std::memory_order_relaxed);
-    cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
-    LOG(INFO) << "[文件IO] 线程" << threadNum << " | 轮次" << m_data.runId
-              << " | 任务" << m_data.taskLabel << " | 状态: COMPLETED";
+    const uint64_t sequence =
+        m_executionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (RunTaskCallback(m_data,
+                        m_callback,
+                        &m_buffers,
+                        RT_HOOK_COMM_CYCLE,
+                        sequence) == 0) {
+      m_state.store(Config::TaskState::COMPLETED,
+                    std::memory_order_relaxed);
+      cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
+      LOG(INFO) << "[文件IO] 线程" << threadNum << " | 轮次"
+                << m_data.runId << " | 任务" << m_data.taskLabel
+                << " | 回调: " << m_data.executorName
+                << " | 状态: COMPLETED";
+    } else {
+      m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
+      cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
+      LOG(ERROR) << "[文件IO] 线程" << threadNum << " | 轮次"
+                 << m_data.runId << " | 任务" << m_data.taskLabel
+                 << " | 回调: " << m_data.executorName
+                 << " | 状态: FAILED";
+    }
   } catch (...) {
     m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
     cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
@@ -143,179 +293,70 @@ void FileIOConsumerTask::ExecuteRange(enki::TaskSetPartition range,
 
   cfg->ioTasksRunning.fetch_sub(1, std::memory_order_relaxed);
 }
-
 // -----------------------------------------------------------------------------
 
 NetworkIOConsumerTask::NetworkIOConsumerTask(const Config::TaskData &data)
-    : m_data(data) {
+    : m_data(data),
+      m_callback(TaskCallbackRegistry::Instance().Resolve(
+          data.type, data.executorName)),
+      m_buffers(data.taskLabel, data.inputBytes, data.outputBytes) {
   m_data.state = Config::TaskState::PENDING;
+  if (!m_buffers.valid()) {
+    LOG(ERROR) << "Network task shared buffers unavailable: "
+               << data.taskLabel;
+  } else {
+    LOG(INFO) << "Network task shared buffers: input="
+              << m_buffers.input_name()
+              << " output=" << m_buffers.output_name();
+  }
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_TASKS);
+}
+
+NetworkIOConsumerTask::~NetworkIOConsumerTask() {
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_COMM);
+  NotifyTaskEvent(m_data, m_callback, RT_HOOK_EXIT_TASKS);
 }
 
 void NetworkIOConsumerTask::ExecuteRange(enki::TaskSetPartition range,
                                          uint32_t threadNum) {
   auto *cfg = Config::Instance();
-  cfg->ioTasksPending.fetch_sub(1, std::memory_order_relaxed);
+  if (!m_pendingConsumed.exchange(true, std::memory_order_relaxed)) {
+    cfg->ioTasksPending.fetch_sub(1, std::memory_order_relaxed);
+  }
   m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
   cfg->ioTasksRunning.fetch_add(1, std::memory_order_relaxed);
+  if (!m_started.exchange(true, std::memory_order_relaxed)) {
+    NotifyTaskEvent(m_data, m_callback, RT_HOOK_INIT_COMM);
+  }
 
   try {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    m_state.store(Config::TaskState::COMPLETED, std::memory_order_relaxed);
-    cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
-    LOG(INFO) << "[网络IO] 线程" << threadNum << " | 轮次" << m_data.runId
-              << " | 任务" << m_data.taskLabel << " | 状态: COMPLETED";
+    const uint64_t sequence =
+        m_executionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (RunTaskCallback(m_data,
+                        m_callback,
+                        &m_buffers,
+                        RT_HOOK_COMM_CYCLE,
+                        sequence) == 0) {
+      m_state.store(Config::TaskState::COMPLETED,
+                    std::memory_order_relaxed);
+      cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
+      LOG(INFO) << "[网络IO] 线程" << threadNum << " | 轮次"
+                << m_data.runId << " | 任务" << m_data.taskLabel
+                << " | 回调: " << m_data.executorName
+                << " | 状态: COMPLETED";
+    } else {
+      m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
+      cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
+      LOG(ERROR) << "[网络IO] 线程" << threadNum << " | 轮次"
+                 << m_data.runId << " | 任务" << m_data.taskLabel
+                 << " | 回调: " << m_data.executorName
+                 << " | 状态: FAILED";
+    }
   } catch (...) {
     m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
     cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
     LOG(ERROR) << "[网络IO] 线程" << threadNum << " | 轮次" << m_data.runId
                << " | 任务" << m_data.taskId << " | 状态: FAILED";
-  }
-
-  cfg->ioTasksRunning.fetch_sub(1, std::memory_order_relaxed);
-}
-
-// -----------------------------------------------------------------------------
-
-PluginIOTask::PluginIOTask(const Config::TaskData &data,
-                           runtime_plugin::DriverHandle *driver)
-    : m_data(data), m_driver(driver),
-      m_readBuffer(data.readBytes), m_writeBuffer(data.writeBytes),
-      m_parameterBuffer(data.parameterBytes) {
-  m_SetSize = 1;
-  m_data.state = Config::TaskState::PENDING;
-
-  m_readChannel.data = m_readBuffer.empty() ? nullptr : m_readBuffer.data();
-  m_readChannel.size_bytes = static_cast<uint32_t>(m_readBuffer.size());
-  m_writeChannel.data = m_writeBuffer.empty() ? nullptr : m_writeBuffer.data();
-  m_writeChannel.size_bytes = static_cast<uint32_t>(m_writeBuffer.size());
-  std::fill(m_writeBuffer.begin(), m_writeBuffer.end(), 0xA5);
-}
-
-void PluginIOTask::ExecuteRange(enki::TaskSetPartition,
-                                uint32_t threadNum) {
-  auto *cfg = Config::Instance();
-  auto *manager = cfg->plugin_manager;
-
-  m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
-  cfg->ioTasksRunning.fetch_add(1, std::memory_order_relaxed);
-
-  RtResult result = RT_OK;
-  try {
-    if (manager == nullptr || m_driver == nullptr) {
-      result = RT_ERR_PARAMETER;
-    } else {
-      result = manager->StartBusCycle(m_driver);
-      if (!m_writeBuffer.empty()) {
-        if (result == RT_OK) {
-          m_writeBuffer[0] =
-              static_cast<uint8_t>(m_executionCount.load(
-                  std::memory_order_relaxed));
-          result = manager->WriteOutputs(m_driver, &m_writeChannel, 1);
-        }
-      }
-      if (result == RT_OK && !m_readBuffer.empty()) {
-        result = manager->ReadInputs(m_driver, &m_readChannel, 1);
-      }
-      if (result == RT_OK && !m_parameterBuffer.empty() &&
-          m_data.parameterId != UINT32_MAX) {
-        result = manager->ReadParameter(m_driver,
-                                        m_data.parameterId,
-                                        m_parameterBuffer.data(),
-                                        static_cast<uint32_t>(
-                                            m_parameterBuffer.size()),
-                                        0);
-      }
-      if (result == RT_OK) {
-        result = manager->TriggerWatchdog(m_driver);
-      }
-    }
-  } catch (...) {
-    result = RT_ERR_FAILED;
-  }
-
-  const uint64_t execution =
-      m_executionCount.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (result == RT_OK) {
-    m_state.store(Config::TaskState::COMPLETED, std::memory_order_relaxed);
-    cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
-  } else {
-    m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
-    cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  if (execution == 1 || execution % 100 == 0 || result != RT_OK) {
-    if (result == RT_OK) {
-      LOG(INFO) << "[插件IO] 线程" << threadNum << " | 轮次"
-                << m_data.runId << " | 任务" << m_data.taskLabel
-                << " | 插件" << m_data.pluginId
-                << " | 类型" << m_data.driverTypeId
-                << " | 状态: COMPLETED"
-                << " | 执行次数: " << execution;
-    } else {
-      LOG(ERROR) << "[插件IO] 线程" << threadNum << " | 轮次"
-                 << m_data.runId << " | 任务" << m_data.taskLabel
-                 << " | 插件" << m_data.pluginId
-                 << " | 类型" << m_data.driverTypeId
-                 << " | 状态: FAILED"
-                 << " | 执行次数: " << execution;
-    }
-  }
-
-  cfg->ioTasksRunning.fetch_sub(1, std::memory_order_relaxed);
-}
-
-// -----------------------------------------------------------------------------
-
-PluginHookTask::PluginHookTask(const Config::TaskData &data,
-                               runtime_plugin::PluginManager *manager)
-    : m_data(data), m_manager(manager) {
-  m_SetSize = 1;
-  m_data.state = Config::TaskState::PENDING;
-}
-
-void PluginHookTask::ExecuteRange(enki::TaskSetPartition,
-                                  uint32_t threadNum) {
-  auto *cfg = Config::Instance();
-
-  m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
-  cfg->ioTasksRunning.fetch_add(1, std::memory_order_relaxed);
-
-  const uint64_t execution = m_executionCount.load(std::memory_order_relaxed);
-  std::string error;
-  RtResult result = RT_ERR_PARAMETER;
-  if (m_manager != nullptr) {
-    result = m_manager->CallHook(m_data.pluginId,
-                                 RT_HOOK_COMM_CYCLE,
-                                 static_cast<uintptr_t>(execution),
-                                 0,
-                                 &error);
-  }
-
-  const uint64_t completed =
-      m_executionCount.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (result == RT_OK) {
-    m_state.store(Config::TaskState::COMPLETED, std::memory_order_relaxed);
-    cfg->ioTasksCompleted.fetch_add(1, std::memory_order_relaxed);
-  } else {
-    m_state.store(Config::TaskState::FAILED, std::memory_order_relaxed);
-    cfg->ioTasksFailed.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  if (completed == 1 || completed % 100 == 0 || result != RT_OK) {
-    if (result == RT_OK) {
-      LOG(INFO) << "[插件Hook] 线程" << threadNum << " | 轮次"
-                << m_data.runId << " | 任务" << m_data.taskLabel
-                << " | 插件" << m_data.pluginId
-                << " | 状态: COMPLETED"
-                << " | 执行次数: " << completed;
-    } else {
-      LOG(ERROR) << "[插件Hook] 线程" << threadNum << " | 轮次"
-                 << m_data.runId << " | 任务" << m_data.taskLabel
-                 << " | 插件" << m_data.pluginId
-                 << " | 状态: FAILED"
-                 << " | 执行次数: " << completed
-                 << " | 错误: " << error;
-    }
   }
 
   cfg->ioTasksRunning.fetch_sub(1, std::memory_order_relaxed);
@@ -337,13 +378,12 @@ void PluginHookCycleTask::ExecuteRange(enki::TaskSetPartition,
   m_state.store(Config::TaskState::RUNNING, std::memory_order_relaxed);
   cfg->ioTasksRunning.fetch_add(1, std::memory_order_relaxed);
 
-  const uint64_t execution = m_executionCount.load(std::memory_order_relaxed);
   std::string error;
   RtResult result =
       manager == nullptr
           ? RT_ERR_PARAMETER
           : manager->CallAllHooks(RT_HOOK_COMM_CYCLE,
-                                  static_cast<uintptr_t>(execution),
+                                  0,
                                   0,
                                   &error);
 

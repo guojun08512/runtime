@@ -56,11 +56,16 @@ public:
     uint32_t intervalMs = 0; // 周期时长（毫秒）
     int priority = 0;        // 优先级，数值越大优先级越高
     std::string pluginId;
+    std::string pluginPath;
     std::string driverTypeId;
     uint32_t readBytes = 0;
     uint32_t writeBytes = 0;
     uint32_t parameterId = UINT32_MAX;
     uint32_t parameterBytes = 0;
+    std::string taskConfigJson = "{}";
+    uint32_t inputBytes = 4096;
+    uint32_t outputBytes = 4096;
+    std::string executorName = "default";
   };
 
   struct PeriodicTaskInfo {
@@ -69,6 +74,7 @@ public:
     enki::IPinnedTask *pinnedTask = nullptr;
     TaskData data;
     std::chrono::steady_clock::time_point nextRun;
+    bool ownsTaskSet = true;
   };
 
   // IPC 配置结构体

@@ -32,9 +32,6 @@ void RT_PLUGIN_CALL Shutdown() {
 RtResult RT_PLUGIN_CALL HookFunction(uint32_t hook,
                                      uintptr_t param1,
                                      uintptr_t param2) {
-    (void)param1;
-    (void)param2;
-
     switch (hook) {
     case RT_HOOK_INIT_SYSTEM:
         Log("counter plugin hook INIT_SYSTEM");
@@ -62,7 +59,7 @@ RtResult RT_PLUGIN_CALL HookFunction(uint32_t hook,
             char message[128];
             std::snprintf(message,
                           sizeof(message),
-                          "counter plugin hook Count COMM_CYCLE: %llu",
+                          "counter plugin hook COMM_CYCLE: %llu",
                           static_cast<unsigned long long>(cycle));
             Log(message);
         }

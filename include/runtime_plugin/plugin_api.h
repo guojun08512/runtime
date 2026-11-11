@@ -124,6 +124,38 @@ typedef RtResult (RT_PLUGIN_CALL *RtHookFunctionV1)(uint32_t hook,
                                                     uintptr_t param1,
                                                     uintptr_t param2);
 
+typedef enum RtTaskKindV1 {
+    RT_TASK_KIND_IEC = 1,
+    RT_TASK_KIND_IO = 2,
+    RT_TASK_KIND_NETWORK = 3
+} RtTaskKindV1;
+
+typedef struct RtTaskContextV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t event_id;
+    uint32_t task_kind;
+    uint64_t sequence;
+    const char *task_id;
+    const char *config_json;
+    const void *input_data;
+    uint32_t input_size;
+    uint64_t input_sequence;
+    void *output_data;
+    uint32_t output_size;
+} RtTaskContextV1;
+
+typedef int (RT_PLUGIN_CALL *RtTaskCallbackV1)(
+    const RtTaskContextV1 *context);
+
+typedef struct RtTaskCallbackDescV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    const char *executor_name;
+    uint32_t task_kind;
+    RtTaskCallbackV1 callback;
+} RtTaskCallbackDescV1;
+
 typedef struct RtDriverDescV1 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -148,6 +180,8 @@ typedef struct RtPluginV1 {
     RtResult (RT_PLUGIN_CALL *init)(const RtHostApiV1 *host);
     void (RT_PLUGIN_CALL *shutdown)(void);
     RtHookFunctionV1 hook;
+    const RtTaskCallbackDescV1 *const *callbacks;
+    uint32_t callback_count;
 } RtPluginV1;
 
 typedef const RtPluginV1 *(RT_PLUGIN_CALL *RtPluginQueryV1)(

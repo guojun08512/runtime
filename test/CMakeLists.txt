@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
+add_subdirectory(triple_buffer_smoke)
 if(RUNTIME_BUILD_EXAMPLE_PLUGIN)
     add_subdirectory(plugin_smoke)
     add_subdirectory(plugin_task_smoke)

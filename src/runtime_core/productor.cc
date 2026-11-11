@@ -29,14 +29,40 @@ static bool ParseTaskCommandJson(const std::string &cmd,
     return defaultValue;
   };
 
+  auto get_config_json = [&]() -> std::string {
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "config");
+    if (node == nullptr) {
+      return "{}";
+    }
+    if (!cJSON_IsObject(node)) {
+      return {};
+    }
+    char *printed = cJSON_PrintUnformatted(node);
+    if (printed == nullptr) {
+      return {};
+    }
+    std::string result(printed);
+    cJSON_free(printed);
+    return result;
+  };
+
   std::string type = get_string("type");
   std::string label = get_string("label");
   int iv = get_int("intervalMs", -1);
   int pr = get_int("priority", -1);
+  int input_bytes = get_int("inputBytes", 4096);
+  int output_bytes = get_int("outputBytes", 4096);
+  std::string task_config = get_config_json();
+  std::string executor_name = get_string("executor");
+  if (executor_name.empty()) {
+    executor_name = "default";
+  }
 
   cJSON_Delete(root);
 
-  if (type.empty() || label.empty() || iv <= 0 || pr < 0) {
+  if (type.empty() || label.empty() || iv <= 0 || pr < 0 ||
+      input_bytes <= 0 || output_bytes <= 0 ||
+      task_config.empty()) {
     return false;
   }
 
@@ -47,12 +73,18 @@ static bool ParseTaskCommandJson(const std::string &cmd,
     t = Config::TaskType::NETWORK_IO;
   else if (type == "file")
     t = Config::TaskType::FILE_IO;
+  else if (type != "io")
+    return false;
 
   outData.type = t;
   outData.intervalMs = static_cast<uint32_t>(iv);
   outData.priority = pr;
   outData.taskLabel = label;
   outData.isPeriodic = true;
+  outData.taskConfigJson = task_config;
+  outData.inputBytes = static_cast<uint32_t>(input_bytes);
+  outData.outputBytes = static_cast<uint32_t>(output_bytes);
+  outData.executorName = executor_name;
   return true;
 }
 

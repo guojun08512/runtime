@@ -9,5 +9,5 @@ target_link_libraries(ipc_task_sender PRIVATE libipc glog::glog)
 add_executable(plugin_task_sender plugin_task_sender.cpp)
 target_link_libraries(plugin_task_sender PRIVATE libipc glog::glog)
 
-add_executable(plugin_hook_sender plugin_hook_sender.cpp)
-target_link_libraries(plugin_hook_sender PRIVATE libipc glog::glog)
+add_executable(dynamic_callback_sender dynamic_callback_sender.cpp)
+target_link_libraries(dynamic_callback_sender PRIVATE libipc glog::glog)

@@ -1,4 +1,5 @@
 #include "runtime_plugin/plugin_manager.h"
+#include "runtime_core/task_callback.h"
 
 #include <cjson/cJSON.h>
 #include <glog/logging.h>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -59,6 +61,22 @@ bool IsValidText(const char *text) {
     return text != nullptr && text[0] != '\0';
 }
 
+bool TaskTypeFromKind(uint32_t kind, Config::TaskType *type) {
+    switch (kind) {
+    case RT_TASK_KIND_IEC:
+        *type = Config::TaskType::IECTASK;
+        return true;
+    case RT_TASK_KIND_IO:
+        *type = Config::TaskType::FILE_IO;
+        return true;
+    case RT_TASK_KIND_NETWORK:
+        *type = Config::TaskType::NETWORK_IO;
+        return true;
+    default:
+        return false;
+    }
+}
+
 struct PluginRecord {
     void *module = nullptr;
     const RtPluginV1 *descriptor = nullptr;
@@ -66,6 +84,8 @@ struct PluginRecord {
     std::atomic<bool> accepting_calls{true};
     std::atomic<uint32_t> active_calls{0};
     std::atomic<uint32_t> active_instances{0};
+    std::vector<std::tuple<Config::TaskType, std::string, RuntimeTaskCallback>>
+        registered_callbacks;
 
     bool Enter() {
         if (!accepting_calls.load(std::memory_order_acquire)) {
@@ -148,6 +168,25 @@ bool ValidatePluginDescriptor(const RtPluginV1 *plugin,
                 SetError(error, "invalid I/O parameter operation table");
                 return false;
             }
+        }
+    }
+
+    if (plugin->callback_count > kMaxDriverCount ||
+        (plugin->callback_count != 0 && plugin->callbacks == nullptr)) {
+        SetError(error, "plugin callback table is invalid");
+        return false;
+    }
+    for (uint32_t i = 0; i < plugin->callback_count; ++i) {
+        const RtTaskCallbackDescV1 *callback = plugin->callbacks[i];
+        Config::TaskType type;
+        if (callback == nullptr ||
+            callback->abi_version != RT_PLUGIN_ABI_V1 ||
+            callback->struct_size < sizeof(RtTaskCallbackDescV1) ||
+            !IsValidText(callback->executor_name) ||
+            callback->callback == nullptr ||
+            !TaskTypeFromKind(callback->task_kind, &type)) {
+            SetError(error, "invalid plugin task callback descriptor");
+            return false;
         }
     }
     return true;
@@ -273,6 +312,21 @@ public:
 
         if (plugin_id != nullptr) {
             *plugin_id = id;
+        }
+
+        for (uint32_t i = 0; i < descriptor->callback_count; ++i) {
+            const RtTaskCallbackDescV1 *callback = descriptor->callbacks[i];
+            Config::TaskType type;
+            TaskTypeFromKind(callback->task_kind, &type);
+            const std::string name(callback->executor_name);
+            if (!TaskCallbackRegistry::Instance().Register(
+                    type, name, callback->callback)) {
+                SetError(error, "duplicate executor name: " + name);
+                UnloadPlugin(id, nullptr);
+                return RT_ERR_BUSY;
+            }
+            record->registered_callbacks.emplace_back(
+                type, name, callback->callback);
         }
 
         const uint32_t init_hooks[] = {
@@ -465,6 +519,13 @@ public:
                 SetError(error, "plugin hook shutdown failed: " +
                                     std::to_string(hook));
             }
+        }
+
+        for (const auto &entry : record->registered_callbacks) {
+            TaskCallbackRegistry::Instance().Unregister(
+                std::get<0>(entry),
+                std::get<1>(entry),
+                std::get<2>(entry));
         }
 
         record->descriptor->shutdown();

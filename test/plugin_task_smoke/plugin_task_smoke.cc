@@ -1,88 +1,185 @@
 #include "runtime_core/global.h"
 #include "runtime_core/logging.h"
-#include "runtime_core/plugin_control.h"
 #include "runtime_core/tasks.h"
-#include "runtime_plugin/plugin_manager.h"
+#include "runtime_core/triple_buffer.h"
 
-#include <filesystem>
 #include <chrono>
-#include <sstream>
+#include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
 
+namespace {
+
+std::atomic<uint64_t> g_iec_callbacks{0};
+std::atomic<uint64_t> g_io_callbacks{0};
+std::atomic<uint64_t> g_network_callbacks{0};
+
+uint32_t ReadU32LE(const unsigned char *data) {
+    return static_cast<uint32_t>(data[0]) |
+           (static_cast<uint32_t>(data[1]) << 8) |
+           (static_cast<uint32_t>(data[2]) << 16) |
+           (static_cast<uint32_t>(data[3]) << 24);
+}
+
+void WriteU32LE(unsigned char *data, uint32_t value) {
+    std::memcpy(data, &value, sizeof(value));
+}
+
+int CustomIecCallback(const RuntimeTaskContext *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    WriteU32LE(output, 0x43494543u);
+    output[4] = static_cast<unsigned char>(context->sequence);
+    output[5] = context->input_data == nullptr
+                    ? 0
+                    : static_cast<const unsigned char *>(
+                          context->input_data)[0];
+    ++g_iec_callbacks;
+    return 0;
+}
+
+int CustomIoCallback(const RuntimeTaskContext *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    WriteU32LE(output, 0x43494f49u);
+    output[4] = static_cast<unsigned char>(context->sequence);
+    output[5] = context->input_data == nullptr
+                    ? 0
+                    : static_cast<const unsigned char *>(
+                          context->input_data)[0];
+    ++g_io_callbacks;
+    return 0;
+}
+
+int CustomNetworkCallback(const RuntimeTaskContext *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    WriteU32LE(output, 0x434e4554u);
+    output[4] = static_cast<unsigned char>(context->sequence);
+    output[5] = context->input_data == nullptr
+                    ? 0
+                    : static_cast<const unsigned char *>(
+                          context->input_data)[0];
+    ++g_network_callbacks;
+    return 0;
+}
+
+Config::TaskData MakeTaskData(const std::string &label,
+                              double interval_ms,
+                              int priority,
+                              Config::TaskType type,
+                              const std::string &executor) {
+    Config::TaskData data;
+    data.type = type;
+    data.runId = 1;
+    data.taskId = 0;
+    data.taskLabel = label;
+    data.isPeriodic = true;
+    data.executorName = executor;
+    data.intervalMs =
+        static_cast<uint32_t>(interval_ms);
+    data.priority = priority;
+    return data;
+}
+
+} // namespace
+
 int main(int argc, char **argv) {
     runtime_logging::Init(argv[0]);
-    if (argc != 2) {
-        LOG(ERROR) << "usage: runtime_plugin_task_smoke <plugin.so>";
+    if (argc != 1) {
+        LOG(ERROR) << "usage: runtime_plugin_task_smoke";
         return 2;
     }
 
     auto *cfg = Config::Instance();
-    runtime_plugin::PluginManager manager;
-    cfg->plugin_manager = &manager;
+    cfg->plugin_manager = nullptr;
+    TaskCallbackRegistry::Instance().Register(
+        Config::TaskType::IECTASK, "custom", CustomIecCallback);
+    TaskCallbackRegistry::Instance().Register(
+        Config::TaskType::FILE_IO, "custom", CustomIoCallback);
+    TaskCallbackRegistry::Instance().Register(
+        Config::TaskType::NETWORK_IO, "custom", CustomNetworkCallback);
+    cfg->ioTasksPending.store(2);
     cfg->ioTasksCompleted.store(0);
     cfg->ioTasksFailed.store(0);
 
-    const std::string plugin_path =
-        std::filesystem::absolute(argv[1]).string();
-    std::ostringstream load_command;
-    load_command << R"({"command":"plugin.load",)"
-                 << R"("pluginId":"runtime.example_plugin",)"
-                 << R"("path":")" << plugin_path << R"(",)"
-                 << R"("autoStart":false})";
-    if (!HandlePluginControlCommand(load_command.str(), cfg, 1) ||
-        !manager.HasPlugin("runtime.example_plugin")) {
-        LOG(ERROR) << "plugin.load command did not load the plugin";
-        return 1;
-    }
+    Config::TaskData io_data = MakeTaskData("native-io-task",
+                                            1,
+                                            10,
+                                            Config::TaskType::FILE_IO,
+                                            "custom");
+    Config::TaskData network_data = MakeTaskData("native-network-task",
+                                                 1,
+                                                 9,
+                                                 Config::TaskType::NETWORK_IO,
+                                                 "custom");
+    Config::TaskData iec_data = MakeTaskData("native-iec-task",
+                                             1,
+                                             8,
+                                             Config::TaskType::IECTASK,
+                                             "custom");
 
-    std::ostringstream task_command;
-    task_command << R"({"command":"plugin.io_task",)"
-            << R"("label":"plugin-task-smoke",)"
-            << R"("intervalMs":1,)"
-            << R"("priority":10,)"
-            << R"("pluginId":"runtime.example_plugin",)"
-            << R"("driverType":"runtime.example_io",)"
-            << R"("readBytes":4,)"
-            << R"("writeBytes":4,)"
-            << R"("parameterId":1,)"
-            << R"("parameterBytes":4})";
+    FileIOConsumerTask io_task(io_data);
+    NetworkIOConsumerTask network_task(network_data);
+    IecTask iec_task(iec_data);
 
-    if (!HandlePluginControlCommand(task_command.str(), cfg, 1)) {
-        LOG(ERROR) << "plugin command was not handled";
-        return 1;
-    }
+    const std::string io_input_name =
+        runtime_core::TaskBuffers::InputName(io_data.taskLabel);
+    const std::string network_input_name =
+        runtime_core::TaskBuffers::InputName(network_data.taskLabel);
+    const std::string iec_input_name =
+        runtime_core::TaskBuffers::InputName(iec_data.taskLabel);
+    runtime_core::TripleBuffer io_input(
+        io_input_name,
+        io_data.inputBytes,
+        runtime_core::TripleBuffer::Role::Writer);
+    runtime_core::TripleBuffer network_input(
+        network_input_name,
+        network_data.inputBytes,
+        runtime_core::TripleBuffer::Role::Writer);
+    runtime_core::TripleBuffer iec_input(
+        iec_input_name,
+        iec_data.inputBytes,
+        runtime_core::TripleBuffer::Role::Writer);
+    auto *io_input_data = static_cast<unsigned char *>(io_input.AcquireWrite());
+    auto *network_input_data =
+        static_cast<unsigned char *>(network_input.AcquireWrite());
+    auto *iec_input_data =
+        static_cast<unsigned char *>(iec_input.AcquireWrite());
+    io_input_data[0] = 0x31;
+    network_input_data[0] = 0x32;
+    iec_input_data[0] = 0x33;
+    io_input.Publish();
+    network_input.Publish();
+    iec_input.Publish();
 
-    std::ostringstream hook_command;
-    hook_command << R"({"command":"plugin.hook_task",)"
-                 << R"("label":"plugin-hook-smoke",)"
-                 << R"("intervalMs":1,)"
-                 << R"("priority":9,)"
-                 << R"("pluginId":"runtime.example_plugin"})";
-    if (!HandlePluginControlCommand(hook_command.str(), cfg, 1)) {
-        LOG(ERROR) << "hook command was not handled";
-        return 1;
-    }
-
-    PluginIOTask *io_task = nullptr;
-    PluginHookTask *hook_task = nullptr;
     {
         std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
-        if (cfg->periodicTasks.size() != 2) {
-            LOG(ERROR) << "plugin tasks were not installed";
-            return 1;
-        }
-        for (const auto &entry : cfg->periodicTasks) {
-            if (entry.data.type == Config::TaskType::PLUGIN_IO) {
-                io_task = static_cast<PluginIOTask *>(entry.taskSet);
-            } else if (entry.data.type == Config::TaskType::PLUGIN_HOOK) {
-                hook_task = static_cast<PluginHookTask *>(entry.taskSet);
-            }
-        }
-    }
-    if (io_task == nullptr || hook_task == nullptr) {
-        LOG(ERROR) << "plugin task handles are null";
-        return 1;
+        cfg->periodicTasks.push_back(
+            {false, &io_task, nullptr, io_data,
+             std::chrono::steady_clock::now()});
+        cfg->periodicTasks.push_back(
+            {false, &network_task, nullptr, network_data,
+             std::chrono::steady_clock::now()});
+        cfg->periodicTasks.push_back(
+            {false, &iec_task, nullptr, iec_data,
+             std::chrono::steady_clock::now()});
     }
 
     enki::TaskSchedulerConfig scheduler_config;
@@ -102,7 +199,9 @@ int main(int argc, char **argv) {
 
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (cfg->ioTasksCompleted.load() == 0 &&
+    while ((io_task.GetState() != Config::TaskState::COMPLETED ||
+            network_task.GetState() != Config::TaskState::COMPLETED ||
+            iec_task.GetState() != Config::TaskState::COMPLETED) &&
            std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -110,31 +209,48 @@ int main(int argc, char **argv) {
     cfg->stopFlag = true;
     cfg->ts.WaitforAllAndShutdown();
 
-    auto *driver = io_task->GetDriver();
-    if (io_task->GetState() != Config::TaskState::COMPLETED ||
-        hook_task->GetState() != Config::TaskState::COMPLETED ||
-        cfg->ioTasksCompleted.load() == 0 ||
+    runtime_core::TripleBuffer io_output(
+        runtime_core::TaskBuffers::OutputName(io_data.taskLabel),
+        io_data.outputBytes,
+        runtime_core::TripleBuffer::Role::Reader);
+    runtime_core::TripleBuffer network_output(
+        runtime_core::TaskBuffers::OutputName(network_data.taskLabel),
+        network_data.outputBytes,
+        runtime_core::TripleBuffer::Role::Reader);
+    runtime_core::TripleBuffer iec_output(
+        runtime_core::TaskBuffers::OutputName(iec_data.taskLabel),
+        iec_data.outputBytes,
+        runtime_core::TripleBuffer::Role::Reader);
+    const auto *io_output_data =
+        static_cast<const unsigned char *>(io_output.AcquireRead(nullptr));
+    const auto *network_output_data = static_cast<const unsigned char *>(
+        network_output.AcquireRead(nullptr));
+    const auto *iec_output_data =
+        static_cast<const unsigned char *>(iec_output.AcquireRead(nullptr));
+
+    if (io_task.GetState() != Config::TaskState::COMPLETED ||
+        network_task.GetState() != Config::TaskState::COMPLETED ||
+        iec_task.GetState() != Config::TaskState::COMPLETED ||
         cfg->ioTasksFailed.load() != 0 ||
-        driver == nullptr) {
-        LOG(ERROR) << "plugin task did not execute its driver interface";
+        io_output_data == nullptr || network_output_data == nullptr ||
+        iec_output_data == nullptr ||
+        ReadU32LE(io_output_data) != 0x43494f49u ||
+        ReadU32LE(network_output_data) != 0x434e4554u ||
+        ReadU32LE(iec_output_data) != 0x43494543u ||
+        io_output_data[5] != 0x31 ||
+        network_output_data[5] != 0x32 ||
+        iec_output_data[5] != 0x33 ||
+        g_io_callbacks.load() == 0 ||
+        g_network_callbacks.load() == 0 ||
+        g_iec_callbacks.load() == 0) {
+        LOG(ERROR) << "native tasks did not execute registered callbacks";
         return 1;
     }
 
-    std::string error;
-    if (manager.StopDriver(driver, &error) != RT_OK ||
-        manager.DestroyDriver(driver, &error) != RT_OK ||
-        manager.UnloadPlugin("runtime.example_plugin", &error) != RT_OK) {
-        LOG(ERROR) << "plugin cleanup failed: " << error;
-        return 1;
-    }
     {
         std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
         cfg->periodicTasks.clear();
     }
-    delete io_task;
-    delete hook_task;
-    cfg->plugin_manager = nullptr;
-
-    LOG(INFO) << "plugin task smoke test passed";
+    LOG(INFO) << "native IO/NETWORK/IEC task smoke test passed";
     return 0;
 }

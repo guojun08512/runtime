@@ -1,5 +1,6 @@
 #include "runtime_plugin/plugin_api.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -387,7 +388,7 @@ RtResult RT_PLUGIN_CALL HookFunction(uint32_t hook,
             char message[128];
             std::snprintf(message,
                           sizeof(message),
-                          "example plugin hook IO COMM_CYCLE: %llu",
+                          "example plugin hook COMM_CYCLE: %llu",
                           static_cast<unsigned long long>(cycle));
             Log(message);
         }
@@ -417,6 +418,97 @@ RtResult RT_PLUGIN_CALL HookFunction(uint32_t hook,
     return RT_OK;
 }
 
+int RT_PLUGIN_CALL DynamicIecCallback(const RtTaskContextV1 *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    std::memset(output, 0, context->output_size);
+    output[0] = static_cast<unsigned char>(context->sequence);
+    output[1] = context->input_data == nullptr
+                    ? 0
+                    : static_cast<const unsigned char *>(
+                          context->input_data)[0];
+    Log("example dynamic IEC callback");
+    return 0;
+}
+
+int RT_PLUGIN_CALL DynamicIoCallback(const RtTaskContextV1 *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    for (uint32_t i = 0;
+         i < std::min<uint32_t>(context->input_size,
+                                context->output_size);
+         ++i) {
+        const unsigned char value =
+            context->input_data == nullptr
+                ? static_cast<unsigned char>(context->sequence + i)
+                : static_cast<const unsigned char *>(
+                      context->input_data)[i];
+        output[i] = value ^ 0xA5;
+    }
+    Log("example dynamic IO callback");
+    return 0;
+}
+
+int RT_PLUGIN_CALL DynamicNetworkCallback(
+    const RtTaskContextV1 *context) {
+    if (context->event_id != RT_HOOK_COMM_CYCLE) {
+        return 0;
+    }
+    if (context->output_data == nullptr || context->output_size < 8) {
+        return 1;
+    }
+    auto *output = static_cast<unsigned char *>(context->output_data);
+    std::memset(output, 0, context->output_size);
+    output[0] = 0x4E;
+    output[1] = static_cast<unsigned char>(context->sequence);
+    output[2] = context->input_data == nullptr
+                    ? 0
+                    : static_cast<const unsigned char *>(
+                          context->input_data)[0];
+    Log("example dynamic NETWORK callback");
+    return 0;
+}
+
+const RtTaskCallbackDescV1 kDynamicIecCallback = {
+    RT_PLUGIN_ABI_V1,
+    sizeof(RtTaskCallbackDescV1),
+    "example.iec",
+    RT_TASK_KIND_IEC,
+    DynamicIecCallback,
+};
+
+const RtTaskCallbackDescV1 kDynamicIoCallback = {
+    RT_PLUGIN_ABI_V1,
+    sizeof(RtTaskCallbackDescV1),
+    "example.io",
+    RT_TASK_KIND_IO,
+    DynamicIoCallback,
+};
+
+const RtTaskCallbackDescV1 kDynamicNetworkCallback = {
+    RT_PLUGIN_ABI_V1,
+    sizeof(RtTaskCallbackDescV1),
+    "example.network",
+    RT_TASK_KIND_NETWORK,
+    DynamicNetworkCallback,
+};
+
+const RtTaskCallbackDescV1 *const kDynamicCallbacks[] = {
+    &kDynamicIecCallback,
+    &kDynamicIoCallback,
+    &kDynamicNetworkCallback,
+};
+
 const RtPluginV1 kPlugin = {
     RT_PLUGIN_ABI_V1,
     sizeof(RtPluginV1),
@@ -428,6 +520,8 @@ const RtPluginV1 kPlugin = {
     PluginInit,
     PluginShutdown,
     HookFunction,
+    kDynamicCallbacks,
+    3,
 };
 
 } // namespace

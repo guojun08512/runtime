@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
       std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
       cfg->periodicTasks.push_back(
           {false, plugin_hook_cycle.get(), nullptr, hook_task_data,
-           std::chrono::steady_clock::now()});
+           std::chrono::steady_clock::now(), false});
     }
     LOG(INFO) << "[plugin] 全局 Hook 周期: "
               << cfg->pluginHookCycleIntervalMs << "ms，优先级 "
@@ -215,6 +215,11 @@ int main(int argc, char **argv) {
   // 调度器停止后，插件实例才能安全停止和卸载。
   {
     std::lock_guard<std::mutex> lock(cfg->periodicTasksMutex);
+    for (auto &entry : cfg->periodicTasks) {
+      if (entry.ownsTaskSet) {
+        delete entry.taskSet;
+      }
+    }
     cfg->periodicTasks.clear();
   }
   plugin_hook_cycle.reset();

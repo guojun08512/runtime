@@ -61,50 +61,8 @@ starting an extra driver:
 }
 ```
 
-Install a periodic task that loads the plugin when necessary, creates a driver,
-starts it, and invokes its I/O interface from the enkiTS task execution path:
-
-```json
-{
-  "command": "plugin.io_task",
-  "label": "axis-io-1",
-  "intervalMs": 1,
-  "priority": 20,
-  "pluginId": "runtime.example_plugin",
-  "pluginPath": "/opt/runtime/plugins/libruntime_example_io_plugin.so",
-  "driverType": "runtime.example_io",
-  "config": {
-    "poll_interval_ms": 1
-  },
-  "readBytes": 4,
-  "writeBytes": 4,
-  "parameterId": 1,
-  "parameterBytes": 4
-}
-```
-
-Each execution calls `write_outputs`, `read_inputs`, and optionally
-`read_parameter` through the `DriverHandle` bound to that task. Omit
-`readBytes`, `writeBytes`, or parameter fields to skip the corresponding
-operation. The sender example is `examples/plugin_task_sender.cpp`.
-
-For CODESYS-style components whose functionality is implemented mainly in the
-hook function, install a hook task:
-
-```json
-{
-  "command": "plugin.hook_task",
-  "label": "plugin-hook-1",
-  "intervalMs": 1,
-  "priority": 20,
-  "pluginId": "runtime.example_plugin",
-  "pluginPath": "/opt/runtime/plugins/libruntime_example_io_plugin.so",
-  "config": {}
-}
-```
-
-`plugin.hook_task` calls `RT_HOOK_COMM_CYCLE` through the plugin's hook function
-on every task execution. The host automatically calls:
+`plugin.unload` removes a plugin after its driver instances and tasks are no
+longer executing. The host automatically calls the complete hook lifecycle:
 
 ```text
 RT_HOOK_INIT_SYSTEM
@@ -122,7 +80,153 @@ RT_HOOK_EXIT
 RT_HOOK_EXIT_SYSTEM
 ```
 
-The hook task sender example is `examples/plugin_hook_sender.cpp`.
+## Native Consumer Tasks
+
+Execution logic belongs to the native RuntimeCore consumers:
+
+```text
+IecTask                 -> IEC data calculation
+FileIOConsumerTask      -> IO channel transform and checksum
+NetworkIOConsumerTask   -> network packet framing and checksum
+```
+
+Each task reads its input shared-memory triple buffer, executes the native
+algorithm, writes the output triple buffer, and publishes it.
+
+Execution algorithms are selected through `TaskCallbackRegistry`. The task
+message can choose a registered callback with `executor`:
+
+```json
+{
+  "type": "iectask",
+  "label": "native-iec-task",
+  "intervalMs": 1,
+  "priority": 20,
+  "executor": "custom"
+}
+```
+
+Register callbacks before installing tasks:
+
+```cpp
+TaskCallbackRegistry::Instance().Register(
+    Config::TaskType::IECTASK,
+    "custom",
+    MyIecExecutionCallback);
+```
+
+Callbacks can also be registered dynamically from a loadable component. A
+plugin declares `RtTaskCallbackDescV1` entries in `RtPluginV1.callbacks`.
+When the plugin is loaded, RuntimeCore registers all entries by task kind and
+executor name. Unloading removes those callbacks before `dlclose`.
+
+```c
+static int MyIoCallback(const RtTaskContextV1 *context) {
+    /* read context->input_data, write context->output_data */
+    return 0;
+}
+
+static const RtTaskCallbackDescV1 kMyCallback = {
+    RT_PLUGIN_ABI_V1,
+    sizeof(RtTaskCallbackDescV1),
+    "my.io.callback",
+    2,                       /* RT task kind: IO */
+    MyIoCallback,
+};
+```
+
+The task selects it with `"executor":"my.io.callback"`. The example plugin
+registers `example.iec`, `example.io`, and `example.network`.
+
+All callbacks use `RuntimeTaskContext`, which contains task type, sequence,
+configuration, and zero-copy input/output shared-memory pointers. The default
+names and implementations are `default` IEC, IO, and network callbacks.
+
+## Standard Event Flow
+
+Native task callbacks and plugin `HookFunction` callbacks use the same
+`RtHookIdV1` event identifiers:
+
+```text
+RT_HOOK_INIT_TASKS   task callback initialized
+RT_HOOK_INIT_COMM    task callback started
+RT_HOOK_COMM_CYCLE   cyclic task execution
+RT_HOOK_EXIT_COMM    task stopped
+RT_HOOK_EXIT_TASKS   task callback destroyed
+```
+
+`RuntimeTaskContext.event_id` identifies the current event. Input/output
+three-buffer pointers are valid for `RT_HOOK_COMM_CYCLE`. The output buffer is
+published only after the cyclic callback succeeds.
+
+Example IEC task:
+
+```json
+{
+  "type": "iectask",
+  "label": "native-iec-task",
+  "intervalMs": 1,
+  "priority": 20,
+  "config": {
+    "mode": "native"
+  }
+}
+```
+
+The same message format works with:
+
+```json
+{"type": "io"}
+{"type": "network"}
+{"type": "iectask"}
+```
+
+`TaskProducer` installs the requested native consumer task directly. The
+sender example is
+`examples/plugin_task_sender.cpp`.
+
+## Shared-Memory Triple Buffers
+
+Every IEC, file-I/O, and network task owns two SPSC shared-memory channels:
+
+```text
+runtime.tb.<task-id>.in.<hash>   producer -> task
+runtime.tb.<task-id>.out.<hash>  task -> consumer
+```
+
+Both channels use the classic EtherCAT-style three-buffer layout. Each channel
+contains three equally sized slots:
+
+```text
+writer slot | published/middle slot | reader slot
+```
+
+The writer always writes its private slot. Publishing atomically swaps the
+writer slot with the published slot. Since the reader owns a third slot, the
+writer never overwrites memory that is currently being read.
+
+The default input and output size is 4096 bytes per slot and can be overridden
+in the task message:
+
+```json
+{
+  "type": "io",
+  "label": "axis-io-1",
+  "intervalMs": 1,
+  "priority": 10,
+  "inputBytes": 8192,
+  "outputBytes": 8192,
+  "config": {}
+}
+```
+
+The native task acquires zero-copy input/output pointers from its
+`TaskBuffers`, writes its result to the private output slot, and publishes the
+output after the algorithm completes.
+
+The shared-memory names are logged when each task is installed. One writer and
+one reader are supported per channel, matching the three-buffer ownership
+model.
 
 ## Multiple Plugins
 
@@ -138,9 +242,8 @@ RUNTIME_PLUGIN_HOOK_INTERVAL_MS=1
 RUNTIME_PLUGIN_HOOK_PRIORITY=0
 ```
 
-Set `RUNTIME_PLUGIN_HOOK_INTERVAL_MS=0` to disable the global hook-cycle task,
-for example when every plugin uses an explicit `plugin.hook_task` with a
-different interval. The example `plugins.json` contains both
+Set `RUNTIME_PLUGIN_HOOK_INTERVAL_MS=0` to disable the global hook-cycle task.
+The example `plugins.json` contains both
 `runtime.example_plugin` and `runtime.example_counter`, allowing
 multi-plugin dispatch to be tested directly.
 

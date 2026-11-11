@@ -3,6 +3,7 @@ find_package(cJSON REQUIRED)
 add_executable(runtime_multi_plugin_smoke
     multi_plugin_smoke.cc
     ${PROJECT_SOURCE_DIR}/src/runtime_plugin/plugin_manager.cc
+    ${PROJECT_SOURCE_DIR}/src/runtime_core/task_callback.cc
 )
 
 target_include_directories(runtime_multi_plugin_smoke PRIVATE
@@ -10,6 +11,7 @@ target_include_directories(runtime_multi_plugin_smoke PRIVATE
 )
 
 target_link_libraries(runtime_multi_plugin_smoke PRIVATE
+    enkiTs
     cjson::cjson
     glog::glog
     ${CMAKE_DL_LIBS}
